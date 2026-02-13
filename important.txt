@@ -1,0 +1,1 @@
+curl -o nginx.zip https://nginx.org/download/nginx-1.26.2.zip
