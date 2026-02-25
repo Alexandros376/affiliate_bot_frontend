@@ -12,6 +12,7 @@ import type { FormEvent } from "react";
 
 export default function VideoForm() {
   const [productPics, setProductPics] = useState<File[]>([]);
+  const [cta_text, setCtaText] = useState<string>("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [problemVideo, setProblemVideo] = useState<File | null>(null);
   const [productTitle, setProductTitle] = useState<string>("");
@@ -32,41 +33,67 @@ export default function VideoForm() {
   const [currentUserName, setCurrentUserName] = useState("");
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
+  const [tokensLeft, setTokensLeft] = useState<number | null>(null);
+  const [userPlan, setUserPlan] = useState<number>(0);
 
   const picsCount = productPics.length;
-  const tokensLeft = 5;
+  const extractTokens = (data: unknown): number | null => {
+    if (!data || typeof data !== "object") return null;
+    const source = data as Record<string, unknown>;
+    const directCandidates = [
+      source.tokens,
+    ];
 
-  useEffect(() => {
-    const fetchSession = async () => {
-      try {
-        const res = await fetch("/api/session", {
-          credentials: "include", // wichtig, damit Cookies gesendet werden
-        });
+    for (const value of directCandidates) {
+      if (typeof value === "number" && Number.isFinite(value)) {
+        return value;
+      }
+    }
 
-        if (!res.ok) {
-          console.error("Failed to fetch session");
-          return;
-        }
+    return null;
+  };
 
-        const data = await res.json();
-        if (data.loggedIn) {
-          setIsAuthenticated(true);
-          setCurrentUserName(data.name);
-          setCurrentUserEmail(data.email); // <--- Email speichern
-        } else {
-          setIsAuthenticated(false);
-          setCurrentUserName("");
-          setCurrentUserEmail("");
-        }
-      } catch (err) {
-        console.error("Error fetching session:", err);
+  const syncSession = async () => {
+    try {
+      const res = await fetch("/api/session", {
+        credentials: "include",
+      });
+
+      if (!res.ok) {
+        console.error("Failed to fetch session");
         setIsAuthenticated(false);
         setCurrentUserName("");
         setCurrentUserEmail("");
+        setTokensLeft(null);
+        setUserPlan(0);
+        return;
       }
-    };
 
-    fetchSession();
+      const data = await res.json();
+      if (data.loggedIn) {
+        setIsAuthenticated(true);
+        setCurrentUserName(data.name || "");
+        setCurrentUserEmail(data.email || "");
+        setTokensLeft(extractTokens(data));
+        setUserPlan(data.plan || 0);
+      } else {
+        setIsAuthenticated(false);
+        setCurrentUserName("");
+        setCurrentUserEmail("");
+        setTokensLeft(null);
+        setUserPlan(0);
+      }
+    } catch (err) {
+      console.error("Error fetching session:", err);
+      setIsAuthenticated(false);
+      setCurrentUserName("");
+      setCurrentUserEmail("");
+      setTokensLeft(null);
+    }
+  };
+
+  useEffect(() => {
+    syncSession();
   }, []);
 
 
@@ -163,6 +190,8 @@ export default function VideoForm() {
       if (data.name) {
         setCurrentUserName(data.name);
       }
+      setTokensLeft(extractTokens(data));
+      await syncSession();
       setShowAuthPanel(false);
       setAuthPassword("");
       setAuthEmail("");
@@ -188,6 +217,7 @@ export default function VideoForm() {
     setIsAuthenticated(false);
     setCurrentUserName("");
     setCurrentUserEmail("");
+    setTokensLeft(null);
     alert("Logged out successfully!");
   };
 
@@ -206,11 +236,6 @@ export default function VideoForm() {
 
 
     if (isLoading) return;
-
-    if (productPics.length !== 6) {
-      alert("Please upload exactly 6 product images.");
-      return;
-    }
 
     if (musicFile && !["audio/wav", "audio/mpeg"].includes(musicFile.type)) {
       alert("Music file must be WAV or MP3.");
@@ -246,6 +271,8 @@ export default function VideoForm() {
     formData.append("description", productDescription);
     formData.append("user_email", isAuthenticated ? currentUserEmail : "");
     formData.append("stayLoggedIn", stayLoggedIn ? "true" : "false");
+    formData.append("cta_text", cta_text);
+    //! CTA TEXT (nur Premium)
 
     try {
       if (isAuthenticated) {
@@ -291,6 +318,7 @@ export default function VideoForm() {
         window.URL.revokeObjectURL(url);
 
         alert("Video generated successfully!");
+        setTokensLeft(prev => (typeof prev === "number" ? Math.max(0, prev - 1) : prev));
       } else {
         setShowAuthPanel(true)
       }
@@ -310,7 +338,6 @@ export default function VideoForm() {
     <div className="page">
       <div className="bg-orb orb-1" />
       <div className="bg-orb orb-2" />
-
       <header className="hero">
         <div className="topbar">
           <div className="brand">
@@ -454,7 +481,9 @@ export default function VideoForm() {
           <div className="section-head">
             <h2>Project Inputs</h2>
             <div className="section-actions">
-              <span className="badge">{tokensLeft} Tokens left</span>
+              <span className="badge">
+                {typeof tokensLeft === "number" ? `${tokensLeft} Tokens left` : "Tokens left: --"}
+              </span>
               <button type="button" className="upgrade-btn" onClick={handleUpgrade}>
                 Upgrade
               </button>
@@ -464,7 +493,7 @@ export default function VideoForm() {
           <div className="grid">
             <label className="field">
               <span className="label">Product Images</span>
-              <span className="hint">Upload exactly 6 JPGs</span>
+              <span className="hint">6 or more JPGs optimal</span>
               <div className="file">
                 <input
                   type="file"
@@ -474,7 +503,7 @@ export default function VideoForm() {
                 />
                 <div className="file-ui">
                   <span>Choose files</span>
-                  <span className="file-meta">{picsCount}/6 selected</span>
+                  <span className="file-meta">{picsCount} selected</span>
                 </div>
               </div>
             </label>
@@ -532,6 +561,20 @@ export default function VideoForm() {
                 onChange={e => setProductDescription(e.target.value)}
               />
             </label>
+
+            <label className="field premium">
+              <span className="label">CTA text</span>
+              <span className="hint">Uses "link in bio" as default</span>
+              <input
+                type="text"
+                placeholder="Grab yours now"
+                value={cta_text}
+                onChange={e => setCtaText(e.target.value)}
+                className="premium"
+                disabled={userPlan === 1}
+              />
+              <span className="tooltiptext">Only available in Growth and Scale plans</span>
+            </label>
           </div>
 
           <div className="footer">
@@ -539,7 +582,7 @@ export default function VideoForm() {
               <div>
                 <span className="summary-label">Status</span>
                 <span className="summary-value">
-                  {picsCount}/6 images, {musicFile ? "audio" : "no audio"}, {problemVideo ? "video" : "no video"}
+                  {picsCount} images, {musicFile ? "audio" : "no audio"}, {problemVideo ? "video" : "no video"}
                 </span>
               </div>
             </div>
@@ -625,13 +668,35 @@ export default function VideoForm() {
           overflow-y: auto;
           background: #0b0b0f;
           color: #e1e1ee;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+        }
+
+        .premium:hover {
+          cursor: not-allowed;
+        }
+        .tooltiptext {
+          visibility: hidden; /* Hidden by default */
+          width: 130px;
+          background-color: black;
+          color: #ffffff;
+          text-align: center;
+          padding: 5px 0;
+          border-radius: 6px;
+          position: absolute;
+          z-index: 1; /* Ensure tooltip is displayed above content */
+        }
+
+
+        .premium:active .tooltiptext {
+          visibility: visible;
         }
 
         .page {
           width: 100%;
           min-height: 100vh;
-          margin: 0;
-          padding: 185px 48px 80px;
+          padding: 100px 0 0;
           position: relative;
           box-sizing: border-box;
         }
@@ -845,7 +910,7 @@ export default function VideoForm() {
           transition: border 0.25s ease, transform 0.25s ease;
         }
 
-        .field:hover {
+        .field:hover:not(.premium) {
           border-color: rgba(255, 255, 255, 0.18);
           transform: translateY(-2px);
         }
