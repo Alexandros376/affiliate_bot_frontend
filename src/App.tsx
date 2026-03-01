@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { FormEvent } from "react";
+import { stripePromise } from "./stripe";
 
 // type StoredUser = {
 //   name: string;
@@ -11,8 +12,47 @@ import type { FormEvent } from "react";
 // const SESSION_KEY = "affiliate_session";
 
 export default function VideoForm() {
+  type PlanId = "free" | "growth" | "scale";
+  type PlanConfig = {
+    id: PlanId;
+    name: string;
+    amount: number;
+    currency: string;
+    interval: "monthly";
+    tokens: number;
+  };
+
+  const PLAN_CONFIGS: Record<PlanId, PlanConfig> = {
+    free: {
+      id: "free",
+      name: "Free",
+      amount: 0,
+      currency: "USD",
+      interval: "monthly",
+      tokens: 5,
+    },
+    growth: {
+      id: "growth",
+      name: "Growth",
+      amount: 9.9,
+      currency: "USD",
+      interval: "monthly",
+      tokens: 100,
+    },
+    scale: {
+      id: "scale",
+      name: "Scale",
+      amount: 14.99,
+      currency: "USD",
+      interval: "monthly",
+      tokens: 1000,
+    },
+  };
+
   const [productPics, setProductPics] = useState<File[]>([]);
   const [cta_text, setCtaText] = useState<string>("");
+  const [isSecondCta, setIsSecondCta] = useState<boolean>(false);
+  const [secondCtaText, setSecondCtaText] = useState<string>("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
   const [problemVideo, setProblemVideo] = useState<File | null>(null);
   const [productTitle, setProductTitle] = useState<string>("");
@@ -33,6 +73,7 @@ export default function VideoForm() {
   const [currentUserName, setCurrentUserName] = useState("");
   const [showAuthPanel, setShowAuthPanel] = useState(false);
   const [showUpgradePanel, setShowUpgradePanel] = useState(false);
+  const [upgradingPlanId, setUpgradingPlanId] = useState<PlanId | null>(null);
   const [tokensLeft, setTokensLeft] = useState<number | null>(null);
   const [userPlan, setUserPlan] = useState<number>(0);
 
@@ -229,6 +270,95 @@ export default function VideoForm() {
     setShowUpgradePanel(false);
   };
 
+  const handlePlanUpgrade = async (planId: PlanId) => {
+    if (upgradingPlanId) return;
+    if (!isAuthenticated || !currentUserEmail.trim()) {
+      setShowUpgradePanel(false);
+      setShowAuthPanel(true);
+      alert("Please login before upgrading your plan.");
+      return;
+    }
+
+    const selectedPlan = PLAN_CONFIGS[planId];
+
+    try {
+      setUpgradingPlanId(planId);
+      const res = await fetch("/api/upgrade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          plan: selectedPlan,
+          payment: {
+            amount: selectedPlan.amount,
+            currency: selectedPlan.currency,
+            interval: selectedPlan.interval,
+          },
+          user: {
+            email: currentUserEmail,
+            name: currentUserName,
+            currentPlan: userPlan,
+          },
+          source: "upgrade_modal",
+          requestedAt: new Date().toISOString(),
+        }),
+      });
+
+      const contentType = res.headers.get("content-type") || "";
+      const data: Record<string, unknown> = contentType.includes("application/json")
+        ? await res.json()
+        : {};
+
+      if (!res.ok) {
+        const errorMessage =
+          (typeof data.detail === "string" && data.detail) ||
+          (typeof data.message === "string" && data.message) ||
+          "Failed to create checkout session.";
+        throw new Error(errorMessage);
+      }
+
+      const checkoutUrl =
+        (typeof data.checkoutUrl === "string" && data.checkoutUrl) ||
+        (typeof data.checkout_url === "string" && data.checkout_url) ||
+        (typeof data.url === "string" && data.url);
+
+      if (checkoutUrl) {
+        window.location.assign(checkoutUrl);
+        return;
+      }
+
+      const sessionId =
+        (typeof data.sessionId === "string" && data.sessionId) ||
+        (typeof data.session_id === "string" && data.session_id) ||
+        (typeof data.id === "string" && data.id);
+
+      if (sessionId) {
+        const stripe = await stripePromise;
+        if (!stripe) throw new Error("Stripe failed to initialize.");
+        const redirectToCheckout = (stripe as unknown as {
+          redirectToCheckout?: (params: { sessionId: string }) => Promise<{ error?: { message?: string } }>;
+        }).redirectToCheckout;
+        if (typeof redirectToCheckout !== "function") {
+          throw new Error("Stripe redirectToCheckout is not available in this Stripe SDK version.");
+        }
+        const result = await redirectToCheckout({ sessionId });
+        if (result.error?.message) throw new Error(result.error.message);
+        return;
+      }
+
+      throw new Error("No checkout redirect target returned by /api/upgrade.");
+    } catch (err) {
+      console.error(err);
+      if (err instanceof Error && err.message) {
+        alert(err.message);
+      } else {
+        alert("Upgrade failed.");
+      }
+    } finally {
+      setUpgradingPlanId(null);
+    }
+  };
+
 
   const handleSubmit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -272,7 +402,8 @@ export default function VideoForm() {
     formData.append("user_email", isAuthenticated ? currentUserEmail : "");
     formData.append("stayLoggedIn", stayLoggedIn ? "true" : "false");
     formData.append("cta_text", cta_text);
-    //! CTA TEXT (nur Premium)
+    formData.append("isSecondCta", isSecondCta ? "true" : "false");
+    formData.append("second_cta_text", isSecondCta ? secondCtaText.trim() : "");
 
     try {
       if (isAuthenticated) {
@@ -575,6 +706,24 @@ export default function VideoForm() {
               />
               <span className="tooltiptext">Only available in Growth and Scale plans</span>
             </label>
+
+            <label className="field">
+              <span className="label">Second CTA</span>
+              <span className="hint">More subtle CTA text</span>
+              <input
+                type="checkbox"
+                checked={isSecondCta}
+                onChange={e => setIsSecondCta(e.target.checked)}
+              />
+              {isSecondCta && (
+                <input
+                  type="text"
+                  placeholder="Out of stock soon"
+                  value={secondCtaText}
+                  onChange={e => setSecondCtaText(e.target.value)}
+                />
+              )}
+            </label>
           </div>
 
           <div className="footer">
@@ -620,7 +769,12 @@ export default function VideoForm() {
                   <li>Standard voice quality</li>
                   <li>Watermark</li>
                 </ul>
-                <button type="button" className="plan-btn">
+                <button
+                  type="button"
+                  className="plan-btn"
+                  onClick={() => handlePlanUpgrade("free")}
+                  disabled={upgradingPlanId !== null}
+                >
                   Choose Free
                 </button>
               </article>
@@ -634,7 +788,12 @@ export default function VideoForm() {
                   <li>More to come</li>
                   <li>More to come</li>
                 </ul>
-                <button type="button" className="plan-btn plan-btn-primary">
+                <button
+                  type="button"
+                  className="plan-btn plan-btn-primary"
+                  onClick={() => handlePlanUpgrade("growth")}
+                  disabled={upgradingPlanId !== null}
+                >
                   Choose Growth
                 </button>
               </article>
@@ -647,8 +806,13 @@ export default function VideoForm() {
                   <li>More to come</li>
                   <li>More to come</li>
                 </ul>
-                <button type="button" className="plan-btn">
-                  Contact Sales
+                <button
+                  type="button"
+                  className="plan-btn"
+                  onClick={() => handlePlanUpgrade("scale")}
+                  disabled={upgradingPlanId !== null}
+                >
+                  Choose Scale
                 </button>
               </article>
             </div>

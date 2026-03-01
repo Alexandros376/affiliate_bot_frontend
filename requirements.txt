@@ -1,0 +1,2 @@
+@stripe/stripe-js @stripe/react-stripe-js
+@stripe/stripe-js
