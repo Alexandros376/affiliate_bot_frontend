@@ -54,7 +54,7 @@ export default function VideoForm() {
   const [isSecondCta, setIsSecondCta] = useState<boolean>(false);
   const [secondCtaText, setSecondCtaText] = useState<string>("");
   const [musicFile, setMusicFile] = useState<File | null>(null);
-  const [problemVideo, setProblemVideo] = useState<File | null>(null);
+  const [problemMedia, setProblemMedia] = useState<File[]>([]);
   const [productTitle, setProductTitle] = useState<string>("");
   const [productDescription, setProductDescription] = useState<string>("");
   const [stayLoggedIn, setStayLoggedIn] = useState<boolean>(false);
@@ -77,6 +77,9 @@ export default function VideoForm() {
   const [tokensLeft, setTokensLeft] = useState<number | null>(null);
   const [userPlan, setUserPlan] = useState<number>(0);
 
+  const API_BASE = "https://affiliate-bot-gd9j.onrender.com";
+
+
   const picsCount = productPics.length;
   const extractTokens = (data: unknown): number | null => {
     if (!data || typeof data !== "object") return null;
@@ -96,7 +99,7 @@ export default function VideoForm() {
 
   const syncSession = async () => {
     try {
-      const res = await fetch("/api/session", {
+      const res = await fetch(`${API_BASE}/api/session`, {
         credentials: "include",
       });
 
@@ -151,7 +154,7 @@ export default function VideoForm() {
     formData.append("code", verificationCode.trim());
 
     try {
-      const res = await fetch("/api/verify", {
+      const res = await fetch(`${API_BASE}/api/verify`, {
         method: "POST",
         body: formData
       });
@@ -196,7 +199,7 @@ export default function VideoForm() {
     authData.append("stayLoggedIn", stayLoggedIn ? "true" : "false");
 
     try {
-      const res = await fetch("/api/auth", {
+      const res = await fetch(`${API_BASE}/api/auth`, {
         method: "POST",
         body: authData,
         credentials: "include"
@@ -247,7 +250,7 @@ export default function VideoForm() {
 
   const handleLogout = async () => {
     try {
-      await fetch("/api/logout", {
+      await fetch(`${API_BASE}/api/logout`, {
         method: "POST",
         credentials: "include",
       });
@@ -283,7 +286,7 @@ export default function VideoForm() {
 
     try {
       setUpgradingPlanId(planId);
-      const res = await fetch("/api/upgrade", {
+      const res = await fetch(`${API_BASE}/api/upgrade`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
@@ -372,8 +375,12 @@ export default function VideoForm() {
       return;
     }
 
-    if (problemVideo && problemVideo.type !== "video/mp4") {
-      alert("Problem video must be MP4.");
+    const invalidProblemMedia = problemMedia.find(file => {
+      const mime = file.type.toLowerCase();
+      return !mime.startsWith("video/");
+    });
+    if (invalidProblemMedia) {
+      alert("Problem media must be a video file.");
       return;
     }
 
@@ -396,7 +403,7 @@ export default function VideoForm() {
     const formData = new FormData();
     productPics.forEach(file => formData.append("product_pics", file));
     if (musicFile) formData.append("music_file", musicFile);
-    if (problemVideo) formData.append("problem_video", problemVideo);
+    problemMedia.forEach(file => formData.append("problem_video", file));
     formData.append("title", productTitle);
     formData.append("description", productDescription);
     formData.append("user_email", isAuthenticated ? currentUserEmail : "");
@@ -409,9 +416,10 @@ export default function VideoForm() {
       if (isAuthenticated) {
         setIsLoading(true);
 
-        const res = await fetch("/api/generate-video", {
+        const res = await fetch(`${API_BASE}/api/generate-video`, {
           method: "POST",
           body: formData,
+          credentials: "include",
         });
 
         const contentType = res.headers.get("content-type") || "";
@@ -430,12 +438,26 @@ export default function VideoForm() {
         }
 
         if (!res.ok) {
-          let errorMessage = "Error generating video.";
-          const errorText = await res.text();
-          if (errorText.trim()) {
-            errorMessage = errorText;
+          const contentType = res.headers.get("content-type") || "";
+
+          if (contentType.includes("application/json")) {
+            const err = await res.json();
+            console.log("SERVER JSON:", err);
+
+            if (err.detail?.error) {
+              throw new Error(err.detail.error);
+            }
+            if (err.detail?.trace) {
+              console.error("Backend Trace:", err.detail.trace);
+            }
+
+            if (typeof err.detail === "string") {
+              throw new Error(err.detail);
+            }
           }
-          throw new Error(errorMessage);
+
+          const text = await res.text();
+          throw new Error(text || "Unknown server error");
         }
 
         const blob = await res.blob();
@@ -455,6 +477,7 @@ export default function VideoForm() {
       }
     } catch (err) {
       console.error(err);
+      console.log("Error details:", err instanceof Error ? { message: err.message, stack: err.stack } : err);
       if (err instanceof Error && err.message && err.message !== "User email is required.") {
         alert(err.message);
       } else {
@@ -641,7 +664,7 @@ export default function VideoForm() {
 
             <label className="field">
               <span className="label">Music File</span>
-              <span className="hint">WAV or MP3</span>
+              <span className="hint">WAV or MP3 - optimal background audio - uses default if not uploaded</span>
               <div className="file">
                 <input
                   type="file"
@@ -656,17 +679,18 @@ export default function VideoForm() {
             </label>
 
             <label className="field">
-              <span className="label">Problem Video</span>
-              <span className="hint">MP4 only</span>
+              <span className="label">Problem Media</span>
+              <span className="hint">These files should depict the problem which persists when not having your product. 1-3 files recommended</span>
               <div className="file">
                 <input
                   type="file"
-                  accept=".mp4"
-                  onChange={e => setProblemVideo(e.target.files?.[0] || null)}
+                  multiple
+                  accept="video/*"
+                  onChange={e => setProblemMedia(Array.from(e.target.files || []))}
                 />
                 <div className="file-ui">
-                  <span>{problemVideo ? problemVideo.name : "Choose file"}</span>
-                  <span className="file-meta">Intro clip</span>
+                  <span>Choose files</span>
+                  <span className="file-meta">{problemMedia.length} selected</span>
                 </div>
               </div>
             </label>
@@ -731,7 +755,7 @@ export default function VideoForm() {
               <div>
                 <span className="summary-label">Status</span>
                 <span className="summary-value">
-                  {picsCount} images, {musicFile ? "audio" : "no audio"}, {problemVideo ? "video" : "no video"}
+                  {picsCount} images, {musicFile ? "audio" : "no audio"}, {problemMedia.length} problem media
                 </span>
               </div>
             </div>
